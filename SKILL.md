@@ -11,7 +11,7 @@ description: 万方数据学术论文检索 — 搜索、详情、整篇/分章�
 
 ## 快速开始（首次使用）
 
-前置：**Windows** · **Google Chrome** · **Python 3.9+** · 能访问 `wanfangdata.com.cn` · （详情/下载还需要**机构订阅**）
+前置：**Windows** / **Google Chrome** / **Python 3.9+** / 能访问 `wanfangdata.com.cn` / （详情/下载还需要**机构订阅**）
 
 ```powershell
 # 1) 装依赖（requirements.txt 在 scripts/ 下）
@@ -23,7 +23,7 @@ python scripts/wf_search.py --q "机器学习" --type 期刊论文 --rows 5 --pa
 # 3) 要抓引用格式 / 章节树 / 下载时，先确认机构访问已生效
 python scripts/chrome_session.py --start
 #    → 用机构 IP 或 CARSI 登录，打开任意万方页面确认已显示机构访问状态
-python scripts/chrome_session.py --status     # 应看到: ✅ CDP 在线: ... (port 9222)
+python scripts/chrome_session.py --status     # 应看到: CDP 在线: ... (port 9222)
 
 # 4) 下载（--save-dir 必填）
 python scripts/wf_paper_download.py --url "https://d.wanfangdata.com.cn/periodical/hebgydxxb202606001" --save-dir ".\out\papers"
@@ -57,12 +57,12 @@ python scripts/chrome_session.py --stop
 
 | 参数 | 必填 | 默认 | 说明 |
 |------|:--:|------|------|
-| `--q` | ✅ | — | 搜索关键词（可重复，1-8 个） |
-| `--type` | ❌ | 全部 | 资源类型（可重复）：`期刊论文` / `学位论文` / `会议论文` / `专利` |
-| `--year` | ❌ | — | 年份 `YYYY` 或 `YYYY-YYYY`（≥1793） |
-| `--rows` | ❌ | 20 | 每关键词最大结果数（≤20） |
-| `--page` | ❌ | 1 | 页码（SPA 分页靠点击，不是 URL 参数） |
-| `--parallel` | ❌ | 2 | 并行关键词数（1-8） |
+| `--q` | 必填 | — | 搜索关键词（可重复，1-8 个） |
+| `--type` | 可选 | 全部 | 资源类型（可重复）：`期刊论文` / `学位论文` / `会议论文` / `专利` |
+| `--year` | 可选 | — | 年份 `YYYY` 或 `YYYY-YYYY`（≥1793） |
+| `--rows` | 可选 | 20 | 每关键词最大结果数（≤20） |
+| `--page` | 可选 | 1 | 页码（SPA 分页靠点击，不是 URL 参数） |
+| `--parallel` | 可选 | 2 | 并行关键词数（1-8） |
 
 **输出：** `{ count, results, logPath }`，每条 result 含 `keyword, totalResults, pageInfo, perPage, items[{ id, title, type, url, snippet }]`。
 
@@ -73,8 +73,8 @@ python scripts/chrome_session.py --stop
 
 | 参数 | 必填 | 默认 | 说明 |
 |------|:--:|------|------|
-| `--url` | ✅ | — | 详情 URL（可重复，1-8 个） |
-| `--parallel` | ❌ | 2 | 并行任务数（1-8） |
+| `--url` | 必填 | — | 详情 URL（可重复，1-8 个） |
+| `--parallel` | 可选 | 2 | 并行任务数（1-8） |
 
 **输出：** `{ count, results, logPath }`，每条 result 含：
 
@@ -88,15 +88,15 @@ python scripts/chrome_session.py --stop
 
 | 参数 | 必填 | 默认 | 说明 |
 |------|:--:|------|------|
-| `--url` | ✅ | — | 详情 URL，可带 `\|ids` 章节索引（可重复，1-5 个，顺序执行） |
-| `--save-dir` | ✅ | — | 保存目录（不存在会自动创建） |
+| `--url` | 必填 | — | 详情 URL，可带 `\|ids` 章节索引（可重复，1-5 个，顺序执行） |
+| `--save-dir` | 必填 | — | 保存目录（不存在会自动创建） |
 
 **`|ids` 语法**：逗号分隔章节索引，支持范围展开。
 
 - 顶层章节：`|1,5-9` → 1、5、6、7、8、9
 - 子章节：`|9.1,9.2`；**含 `.` 的范围只取两端**（`|9.1-9.4` → 9.1、9.4，不展开中间）
 - 索引从哪来：`wf_detail` 输出里 `chapters[].label` 的**前缀**（label `9.1 研究背景与意义11-13 页` → 索引 `9.1`）
-- ⚠️ **不是每篇论文都有子章节**：只用顶层索引即可；索引不在树里会报 `"章节索引未匹配 — ids=..."`
+- 注意：**不是每篇论文都有子章节**：只用顶层索引即可；索引不在树里会报 `"章节索引未匹配 — ids=..."`
 
 两种模式：
 
