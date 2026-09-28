@@ -81,6 +81,9 @@ python scripts/chrome_session.py --stop
 - 公共：`url, type, hasInstitutionalAccess, title, authors[], institution, doi, abstract, keywords[], readCount, downloadCount, citedCount`
 - 类型专属：期刊 `pubDate`；学位 `discipline/advisor/degreeYear` + **`chapters` 章节树**；会议 `conferenceDate`；专利 `patentType/patentNumber/pubDate/claims`
 - 另有 `references[]`、`citations[]`（GB/T 7714 / MLA / APA 三段，**需机构登录**，否则为 `"需要登录获取"`）
+- **`references` 不是每篇都有**：万方详情页对部分期刊不提供参考文献区块（实测：`innerText` 与 `textContent`
+  里都搜不到"参考文献"），此时该字段直接不出现——**这是数据源如此，不是抓取失败**，别据此去动提取逻辑；
+  真要该文献的参考文献，得从 PDF 原文里找。
 
 `type` 形如 `[期刊论文]/[学位论文]/[会议论文]/[专利]`，学位按授予学位细化为 `[博士论文]/[硕士论文]`。空的 `doi`/`keywords` 字段会被删除；无效 URL → `"Invalid URL — 404 page not found"`。
 
