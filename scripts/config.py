@@ -37,6 +37,7 @@ _OVERRIDES = {}
 
 
 def _coerce(raw):
+    """环境变量字符串 → 类型：'3,5'→(3,5)、数字、布尔、原样"""
     s = raw.strip()
     if "," in s:
         return tuple(_coerce(x) for x in s.split(","))

@@ -250,14 +250,15 @@ scripts/
   wf_paper_download.py     整篇/分章下载（真实鼠标点击 + 下载事件捕获 + zip 解压重命名）
   wf_parser.py             提取纯函数（URL/facet/结果/章节 ids/引用切分）
   cdp_base.py              CDP 客户端 + Chrome 启动 + 人类行为模拟 + tab 生命周期 + 下载能力
-  chrome_session.py        登录会话管理（--start/--status/--stop）
+  chrome_session.py        机构访问会话管理（--start/--status/--stop/--url）
   config.py                集中配置（可用 WF_* 覆盖）
   requirements.txt         依赖清单
 
-tests/                     离线单测（不需要 Chrome / 网络 / 机构权限）
+  tests/
+  test_*.py                离线单测（不需要 Chrome / 网络 / 机构权限）
 ```
 
-跑测试（不需要登录、不需要机构权限）：
+跑测试（离线单测，不需要机构权限/网络）：
 
 ```powershell
 pip install pytest
