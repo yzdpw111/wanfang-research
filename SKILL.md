@@ -38,6 +38,44 @@ python scripts/chrome_session.py --stop
 - **日志落在"当前工作目录"的 `logs/`**：在仓库根跑 → `<repo>/logs/`；在 `scripts/` 里跑 → `scripts/logs/`。可用 `WF_LOGS_DIR` 固定。
 - `--status` 只证明 **Chrome/CDP 在线**，**不显示机构访问状态**；确认办法是跑一次搜索/详情看是否拿到内容。
 
+## chrome_session.py（Chrome 会话管理）
+
+管理专用 CDP Chrome 的生命周期（登录 / 查看状态 / 关闭）。抓取脚本会**自动启动或复用** Chrome，**不需要先跑这个脚本**；只有在需要**登录**或想手动关掉 Chrome 时才用它。
+
+| 参数 | 说明 |
+|------|------|
+| `--start` | 启动专用 Chrome 并打开默认站点（见下）。已在运行则**直接复用**（幂等） |
+| `--status` | 查看 CDP 是否在线 + 端口 + 当前打开的页面列表 |
+| `--stop` | 关闭专用 Chrome |
+| `--url` | 自定义 `--start` 时打开的 URL（**只开这一个，替代默认站点**） |
+
+不传任何参数 → 打印帮助。
+
+`--start` 会打开 **万方数据** 首页，方便确认机构访问是否已生效。
+
+```powershell
+# 激活机构访问（首次/过期后；登录态持久保存在 profile 里）
+python scripts/chrome_session.py --start
+# → 在弹出的 Chrome 窗口里完成机构认证 —— **校园网内通常免登录**，校外需用机构 IP 或 CARSI 登录学校账号
+
+# 查看状态（CDP 是否在线 + 打开的页面）
+python scripts/chrome_session.py --status
+# → CDP 在线: Chrome/xxx (port 9222)
+
+# 只打开某个特定 URL（替代默认站点）
+python scripts/chrome_session.py --start --url "https://s.wanfangdata.com.cn/paper?q=%E7%94%B5%E6%BA%90%E5%AE%8C%E6%95%B4%E6%80%A7"
+
+# 关闭
+python scripts/chrome_session.py --stop
+```
+
+注意事项：
+
+- **`--stop` 只关本 profile 的 Chrome，不碰你日常用的 Chrome** —— 按 `--user-data-dir` 精准匹配进程，不会误杀主浏览器。
+- **`--stop` 后机构访问认证不丢**（存在 profile 里），下次 `--start` 无需重新认证。
+- **`--status` 只证明 CDP 在线，不显示机构访问状态**。确认机构访问看顶部机构账号条是否不再是 `登录机构账号`。
+- 脚本会顺带清理历史遗留的 `ChromeCDP-Shared` 计划任务；没建过也无害。
+
 ## 运行前提与约定
 
 | 项 | 说明 |
