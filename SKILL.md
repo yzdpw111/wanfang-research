@@ -21,6 +21,8 @@ pip install -r scripts/requirements.txt
 python scripts/wf_search.py --q "机器学习" --type 期刊论文 --rows 5 --parallel 1
 
 # 3) 要抓引用格式 / 章节树 / 下载时，先确认机构访问已生效
+#    校园网内：先关掉梯子/代理（它会改掉出口 IP，导致机构识别失败）
+#    校外：用 CARSI 登录学校账号（走账号认证，不依赖出口 IP，梯子不影响）
 python scripts/chrome_session.py --start
 #    → 用机构 IP 或 CARSI 登录，打开任意万方页面确认已显示机构访问状态
 python scripts/chrome_session.py --status     # 应看到: CDP 在线: ... (port 9222)
@@ -218,7 +220,8 @@ python scripts\wf_search.py --q "机器学习" --rows 5
 |---|---|
 | 搜索返回 `count=0` 且 `notice` 提到疑似限流 | 万方静默限流 → **冷却几分钟**再试；别连续高频跑 |
 | `"Invalid URL — 404 page not found"` | URL 不对或已失效 → 用 `wf_search` 结果里的 `url` 原样传入 |
-| `"Not logged in"` | 机构访问没生效 → `python scripts/chrome_session.py --start` 后重新激活 |
+| `"Not logged in"` | 机构访问没生效 → `python scripts/chrome_session.py --start` 后重新激活。**校园网内还要检查是否开着梯子/代理** —— 见下条 |
+| 校园网内已连上但仍不生效 | **梯子/代理会改掉出口 IP，使机构识别失败**（症状与"未订阅"极像，容易误判）→ 关掉梯子/代理后重新 `--start` 再试。**校外走 CARSI 账号认证时不适用**：那条路径不依赖出口 IP |
 | 下载报错含 `HTTP 403/302` 或非 PDF | 机构未订阅该文献，或访问失效 |
 | `"章节索引未匹配 — ids=..."` | 索引不在章节树里 → 先 `wf_detail` 看 `chapters[].label` 前缀；**不是每篇都有子章节** |
 | 分章下载目录名是 `D04070817` 这类 ID | part 页取不到标题时的兜底命名 → 正常 |
