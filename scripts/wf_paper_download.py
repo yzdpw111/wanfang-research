@@ -198,14 +198,45 @@ def _match_tree(tree, idx):
     return None
 
 
+def _tree_order(tree):
+    """按前序遍历返回树中所有 idx（即万方打包 zip 的顺序）"""
+    order = []
+    for node in tree:
+        order.append(node.get("idx"))
+        order.extend(_tree_order(node.get("kids", [])))
+    return order
+
+
+def _sort_ids_by_tree_order(tree, ids):
+    """把请求的 ids 调整为「树顺序」。
+
+    万方分章 zip 是按**章节在树中的顺序**打包的，不是按请求顺序。
+    实测：请求 `|7.1,6.3`（7.1 在前），zip 内部条目却是 6.3 在前、7.1 在后。
+    因此必须先把 ids 排成树顺序，才能与 sorted(解压出的文件) 逐位正确配对。
+
+    树里找不到的 idx 保持原有相对顺序并排到最后（配对会落空，但不会影响其他项，
+    也不会丢 id —— 调用方在前置校验里已保证 ids 都在树中）。
+    """
+    order = _tree_order(tree)
+    rank = {idx: i for i, idx in enumerate(order)}
+    missing = len(order)
+    return sorted(ids, key=lambda x: (rank.get(x, missing), ids.index(x)))
+
+
 def _expand_zip(zip_path, out_dir, tree, ids):
-    """解压章节 zip，按 (idx) 标题.pdf 重命名；返回文件数"""
+    """解压章节 zip，按 (idx) 标题.pdf 重命名；返回文件数
+
+    配对依据是「树顺序」：zip 内文件按树顺序排列，所以先把 ids 排成树顺序，
+    再与 sorted(files) 逐位配对。命名用的 idx 与 label 取自同一个位置，
+    保证 (idx) 前缀与标题自洽。
+    """
     with zipfile.ZipFile(zip_path) as zf:
         zf.extractall(out_dir)
     os.remove(zip_path)
     files = sorted(f for f in os.listdir(out_dir) if f.lower().endswith(".pdf"))
+    ordered = _sort_ids_by_tree_order(tree, ids)
     n = 0
-    for i, idx in enumerate(ids):
+    for i, idx in enumerate(ordered):
         node = _match_tree(tree, idx)
         label = (node or {}).get("label", "")
         _, clean_title, _ = parse_chapter_label(f"{idx} {label}")
