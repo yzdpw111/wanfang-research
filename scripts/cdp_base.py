@@ -106,6 +106,79 @@ def find_chrome():
     raise CdpError("Chrome 未找到")
 
 
+# ── 启动诊断：Chrome 的 stderr 必须落盘，否则"启动失败"会伪装成"启动超时" ──
+
+# Chrome 在受限沙箱里被杀掉时，stderr 里会出现这些特征词
+_SANDBOX_MARKERS = ("crashpad", "OpenProcess", "platform_channel", "self-terminating", "拒绝访问")
+
+
+def chrome_log_path():
+    """Chrome 自身 stdout/stderr 的落盘路径。
+
+    DSH 沙箱只允许写工作区：state.dir（profile 所在处）常被拒，所以先试
+    logs.dir（默认 <运行目录>/logs，沙箱内可写），再退到系统临时目录，
+    最后退回脚本目录；全失败返回 None（那时放弃落盘，但不能因此中断启动）。
+    """
+    import tempfile
+    candidates = []
+    for key in ("logs.dir", "state.dir"):
+        try:
+            d = get(key)
+        except Exception:
+            d = None
+        if isinstance(d, str) and d:
+            candidates.append(os.path.join(d, "logs") if key == "state.dir" else d)
+    candidates.append(tempfile.gettempdir())
+    candidates.append(os.path.dirname(os.path.abspath(__file__)))
+    for d in candidates:
+        try:
+            os.makedirs(d, exist_ok=True)
+            path = os.path.join(d, "chrome-launch.log")
+            with open(path, "ab"):
+                pass          # 探写一次：没权限时立刻退回下一个候选目录
+            return path
+        except Exception:
+            continue
+    return None
+
+
+def read_log_tail(path, limit=1500):
+    """读启动日志末尾；任何失败都返回空串 —— 日志只用于诊断，不能盖住真实错误"""
+    if not path:
+        return ""
+    try:
+        with open(path, "rb") as f:
+            return f.read()[-limit:].decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+
+
+def launch_failed(port, log_path, code):
+    """构造 Chrome 启动失败的错误：附 Chrome 自己的 stderr + 可执行的处置建议"""
+    tail = read_log_tail(log_path)
+    when = "启动即退出" if code is not None else f"{get('timeout.chrome_start')} 秒内未就绪"
+    msg = [f"Chrome {when}（port {port}）", f"Chrome 日志: {log_path or '(日志目录不可写，未能落盘)'}"]
+    if tail:
+        msg += ["--- Chrome stderr 末尾 ---", tail, "-------------------------"]
+    if any(m in tail for m in _SANDBOX_MARKERS):
+        msg += [
+            "诊断: crashpad 的进程句柄与 mojo 的命名管道被当前受限沙箱拒绝，Chrome 启动即自杀，"
+            "调试端口永不监听。与 skill 代码/依赖/启动参数均无关：--no-sandbox、"
+            "--disable-crash-reporter、--headless=new 都试过，全部无效。",
+            "处置: Chrome 必须在放行沙箱(danger-full-access)或 DSH 之外启动一次，之后本脚本在"
+            "沙箱内直接复用该实例（ensure_cdp 会自动发现 9222-9299 上的在线 CDP）：\n"
+            "  1) 沙箱外: python scripts/chrome_session.py --start   （并在窗口里登录）\n"
+            "  2) 沙箱内: 正常跑抓取脚本，无需再启动 Chrome",
+        ]
+    elif tail:
+        msg += ["诊断: Chrome 未监听调试端口就退出了，原因见上面的 stderr；"
+                "若显示 profile 被占用，先关掉使用同一 profile 的 Chrome 再重试。"]
+    else:
+        msg += ["诊断: 拿不到 Chrome 的 stderr（日志目录都不可写）。常见原因仍是受限沙箱拒绝 "
+                "crashpad/mojo；处置同上：在放行沙箱或 DSH 之外启动一次 Chrome。"]
+    return CdpError("\n".join(msg))
+
+
 def ensure_cdp():
     """返回可用端口。优先复用在线 CDP，否则直接 detached 启动 Chrome。"""
     # 1) 端口文件里记录的端口若在线则复用
@@ -116,24 +189,41 @@ def ensure_cdp():
             return saved
     except Exception:
         pass
-    # 2) 9222-9299 里已有的 CDP 直接复用（用户手动开的）
+    # 2) 9222-9299 里已有的 CDP 直接复用（用户手动开的、在沙箱外起的都算）
     for port in range(9222, 9300):
         if port_busy(port):
             return port
     # 3) 启动新 Chrome。必须脱离调用方进程组，否则脚本退出时 Chrome 会被一起收走。
     #    原先用 schtasks 计划任务达到同样目的，但实测本机不再触发
     #    （任务 Last Run Time 不更新、端口不监听），改为直接 Popen(DETACHED_PROCESS)。
+    #    Chrome 的 stdout/stderr 落盘而不是丢 DEVNULL —— 否则"启动失败"会伪装成"启动超时"。
     port = pick_port()
     exe = find_chrome()
     os.makedirs(PROFILE, exist_ok=True)
     DETACHED_PROCESS = 0x00000008
     CREATE_NEW_PROCESS_GROUP = 0x00000200
-    subprocess.Popen(
+    log_path = chrome_log_path()
+    log_handle = None
+    if log_path:
+        try:
+            log_handle = open(log_path, "ab")
+            log_handle.write(
+                f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} launch port={port} ===\n".encode("utf-8"))
+            log_handle.flush()
+        except Exception:
+            log_handle = None
+    sink = log_handle if log_handle is not None else subprocess.DEVNULL
+    proc = subprocess.Popen(
         [exe, f"--remote-debugging-port={port}", f"--user-data-dir={PROFILE}",
          "--remote-allow-origins=*", "--no-first-run", "--no-default-browser-check"],
         creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL, stdout=sink, stderr=sink,
         close_fds=True)
+    if log_handle is not None:
+        try:
+            log_handle.close()      # 子进程持有自己的句柄副本，父进程这份可以关
+        except Exception:
+            pass
     deadline = time.time() + get("timeout.chrome_start")
     while time.time() < deadline:
         if port_busy(port):
@@ -143,8 +233,12 @@ def ensure_cdp():
             except Exception:
                 pass
             return port
+        code = proc.poll()
+        if code is not None:
+            # Chrome 已经退出，不必再等满超时：直接把它的 stderr 抛出来
+            raise launch_failed(port, log_path, code)
         time.sleep(1)
-    raise CdpError(f"Chrome {get('timeout.chrome_start')} 秒内未就绪")
+    raise launch_failed(port, log_path, proc.poll())
 
 
 class CdpClient:
@@ -650,17 +744,121 @@ def _recv_ws(ws, timeout):
 
 # ── 结果落盘（供多对话接力复用）────────────────────────
 
-def write_log(data, script_name):
+def _find_record_list(data):
+    """从结果对象里找出「记录列表」——兼容 `results` / `items` / `refs` / `files`。"""
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if not isinstance(data, dict):
+        return []
+    for key in ("results", "items", "refs", "files", "chapters"):
+        v = data.get(key)
+        if isinstance(v, list) and v and isinstance(v[0], dict):
+            return v
+    return []
+
+
+def flatten_records(data):
+    """把落盘结果压成**一层记录**，供 `.jsonl` / `.tsv` 摘要使用。
+
+    检索类结果形状是 `{results:[{keyword, items:[...]}]}`——这里会把 `items`
+    展平到一层并带上所属 `keyword`，这样摘要里一行就是**一篇文献**。
+    """
+    out = []
+    for r in _find_record_list(data):
+        items = r.get("items")
+        if isinstance(items, list) and items and isinstance(items[0], dict):
+            for it in items:
+                out.append({"keyword": r.get("keyword"), **it})
+        else:
+            out.append(r)
+    return out
+
+
+def _tsv_cell(v):
+    """TSV 单元格：去制表符/换行（否则会破坏列），超长截断。"""
+    s = json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else ("" if v is None else str(v))
+    s = s.replace("\t", " ").replace("\r", " ").replace("\n", " ")
+    return s if len(s) <= 80 else s[:77] + "..."
+
+
+def _find_record_list(data):
+    """从结果对象里找出「记录列表」——兼容 `results` / `items` / `refs` / `files` / `notes`。"""
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if not isinstance(data, dict):
+        return []
+    for key in ("results", "items", "refs", "files", "chapters", "notes", "questions", "columns"):
+        v = data.get(key)
+        if isinstance(v, list) and v and isinstance(v[0], dict):
+            return v
+    return []
+
+
+def flatten_records(data):
+    """把落盘结果压成**一层记录**，供 `.jsonl` 镜像使用。
+
+    检索类结果形状是 `{results:[{keyword, items:[...]}]}`——这里会把 `items`
+    展平到一层并带上所属 `keyword`，这样镜像里一行就是**一条结果**。
+    """
+    out = []
+    for r in _find_record_list(data):
+        items = r.get("items")
+        if isinstance(items, list) and items and isinstance(items[0], dict):
+            for it in items:
+                out.append({"keyword": r.get("keyword"), **it})
+        else:
+            out.append(r)
+    return out
+
+
+def write_log(data, script_name, params=None):
     """完整结果落盘到 <logs.dir>/<脚本名>-<时间戳>.json，返回绝对路径。
 
     宿主对脚本 stdout 有大小上限，结果一多就会被截断；Agent 需要全文时
-    直接读这个文件。必须在 stdout 输出之前调用：这样 stdout 崩了也不丢结果。
+    直接读这个文件。**必须在 stdout 输出之前调用**：这样 stdout 崩了也不丢结果。
+
+    ★ 2026-10 增强 ①：落盘时**追加一个 `meta` 字段**（纯增量，`count`/`results` 不动）：
+        {"meta": {"skill", "script", "time", "argv"}}
+    `argv` 默认取本次命令行参数 —— **原始 JSON 因此能自证"是哪个命令、什么时候产生的"**。
+
+    ★ 2026-10 增强 ②：**额外**落一份 `<名>.jsonl` 等价镜像（主 `.json` 契约完全不变）。
+      它**不是**因为"文件会被截断"（文件是我们自己完整写的，不会截断），而是因为
+      **一行一条记录**：agent 可以直接 `Select-String` / `grep` / 按行分页读取，
+      不必每次都写一个解析器。首行是 `{"__meta__": …, "__count__": …}`。
+
+    ⚠️ **不再写 `.tsv`**：它是纯派生视图，列集合随记录字段漂移（检索日志与详情日志的列
+    完全不同），且不属于"证据层"。需要一行一篇的表时，**由下游分析层生成**
+    （例如 `lit-research` 的聚合表）。
     """
     import datetime
+    import sys
+
     logs_dir = get("logs.dir")
     os.makedirs(logs_dir, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     path = os.path.join(logs_dir, f"{script_name}-{ts}.json")
+
+    payload = dict(data) if isinstance(data, dict) else {"results": data}
+    # `meta` 放最后，保持原有字段在前（对按位置阅读的人影响最小）
+    payload["meta"] = {
+        "skill": "wanfang-research",
+        "script": script_name,
+        "time": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "argv": list(params) if params is not None else list(sys.argv[1:]),
+    }
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    # `.jsonl` 等价镜像（失败不影响主结果）
+    try:
+        recs = flatten_records(data)
+        with open(path[:-5] + ".jsonl", "w", encoding="utf-8") as f:
+            f.write(json.dumps(
+                {"__meta__": payload["meta"],
+                 "__count__": payload.get("count", len(recs))},
+                ensure_ascii=False) + "\n")
+            for r in recs:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # 镜像是附加物；它失败不该让主结果算失败
     return os.path.abspath(path)

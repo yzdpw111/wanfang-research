@@ -3,10 +3,56 @@ import urllib.parse
 
 import pytest
 
-from wf_parser import (TYPE_MAP, build_search_url, detect_type, extract_item_id,
-                       extract_refs, extract_total, gen_chapter_label, page_info,
-                       parse_chapter_label, parse_citations, parse_ids,
+from wf_parser import (TYPE_MAP, build_search_url, detect_type, doi_before_references,
+                       extract_item_id, extract_refs, extract_total, gen_chapter_label,
+                       page_info, parse_chapter_label, parse_citations, parse_ids,
                        parse_result_item, parse_year_range, split_claims, split_title)
+
+
+class TestDoiBeforeReferences:
+    """★ 修复实测 bug（2026-10）。
+
+    万方「参考文献」列表里**每一条都带 `DOI:10.x`**，而旧实现从**整页**正则抓第一个
+    → **必然抓成参考文献里某篇的 DOI**。实测：中国学位论文 `thesis/D03561632`
+    被挂上 `10.1016/j.measurement.2021.109273`（Elsevier），而该页题录区没有 DOI。
+    """
+
+    def test_doi_after_references_heading_is_ignored(self):
+        """核心用例：题录区无 DOI、参考文献里有 → **必须返回空**。"""
+        body = (
+            "基于深度迁移学习的剩余使用寿命预测和健康状态估计\n"
+            "作者：张三\n摘要：本文研究……\n"
+            "关键词：锂电池\n"
+            "参考文献\n"
+            "[1] Qing Xu,Min Wu. A Hybrid Ensemble Approach[J]. Journal. 2021. "
+            "DOI:10.1016/j.measurement.2021.109273 .\n"
+            "[2] Ding, Ning. A novel method[J]. 2019. DOI:10.1016/j.isatra.2019.08.012 .\n"
+        )
+        assert doi_before_references(body) == ""
+
+    def test_doi_before_references_heading_is_returned(self):
+        """题录区有 DOI → 正常返回（期刊论文常见）。"""
+        body = (
+            "某期刊论文\nDOI：10.11918/202509041\n摘要：……\n"
+            "参考文献\n[1] x. DOI:10.1016/j.other.1 .\n"
+        )
+        assert doi_before_references(body) == "10.11918/202509041"
+
+    def test_no_references_heading_returns_empty(self):
+        """**找不到「参考文献」标题就返回空** —— 宁可缺，不许错。
+
+        若这里退回"整页抓第一个"，就会重现那个把参考文献 DOI 当本文 DOI 的 bug。
+        """
+        body = "某论文\n作者：张三\n[1] Some ref. DOI:10.1016/j.x.1 .\n"
+        assert doi_before_references(body) == ""
+
+    def test_empty_body(self):
+        assert doi_before_references("") == ""
+        assert doi_before_references(None) == ""
+
+    def test_more_than_one_doi_in_metadata_takes_first(self):
+        body = "标题\nDOI：10.1000/first\nDOI：10.1000/second\n参考文献\n[1] a DOI:10.1/x .\n"
+        assert doi_before_references(body) == "10.1000/first"
 
 
 class TestParseYearRange:

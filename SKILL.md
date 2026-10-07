@@ -40,6 +40,24 @@ python scripts/chrome_session.py --stop
 - **日志落在"当前工作目录"的 `logs/`**：在仓库根跑 → `<repo>/logs/`；在 `scripts/` 里跑 → `scripts/logs/`。可用 `WF_LOGS_DIR` 固定。
 - `--status` 只证明 **Chrome/CDP 在线**，**不显示机构访问状态**；确认办法是跑一次搜索/详情看是否拿到内容。
 
+## 运行环境（重要：DSH 沙箱下必须先放行沙箱启动 Chrome）
+
+Chrome 的多进程通信依赖 crashpad 崩溃处理器和 mojo 命名管道。**在 DSH 的受限沙箱（read-only / workspace-write）里这两者都被拒绝**，Chrome 会启动即自杀、调试端口永不监听——表现就是"等 30 秒后报 `Chrome 30 秒内未就绪`"。这与本 skill 的代码/依赖/启动参数都无关：`--no-sandbox`、`--disable-crash-reporter`、`--headless=new` 实测全部无效。
+
+**沙箱内连 Chrome 没有任何问题**（TCP 127.0.0.1、HTTP `/json`、WebSocket CDP 均实测可用）；**只有"启动 Chrome"这一件事必须放行沙箱**。所以固定用法是两步：
+
+```powershell
+# ① 放行沙箱（danger-full-access）或 DSH 之外：启动 Chrome 并完成机构访问认证（只需一次）
+python scripts/chrome_session.py --start
+
+# ② 回到沙箱内正常跑抓取脚本：ensure_cdp() 会自动复用 9222-9299 上的在线实例
+python scripts/wf_search.py --q "机器学习" --rows 5
+```
+
+- 第 ② 步不需要放行沙箱，也不会再尝试启动 Chrome。
+- Chrome 启动失败时它的 stderr 会落盘到 `logs/chrome-launch.log`，错误信息里直接带出来；日志目录都不可写时会明说。
+- `chrome_session.py --stop` 靠进程查询，沙箱内可能查不到 PID（`Get-CimInstance` 被拒）；沙箱内要关 Chrome 请用 CDP 的 `Browser.close`，或在放行沙箱下执行 `--stop`。
+
 ## chrome_session.py（Chrome 会话管理）
 
 管理专用 CDP Chrome 的生命周期（登录 / 查看状态 / 关闭）。抓取脚本会**自动启动或复用** Chrome，**不需要先跑这个脚本**；只有在需要**登录**或想手动关掉 Chrome 时才用它。
@@ -179,6 +197,34 @@ $f = (Get-Content .\logs\wf_search-*.json | Select-Object -Last 1)   # 或直接
 Get-Content $f -Raw -Encoding UTF8 | ConvertFrom-Json | Select-Object count
 ```
 
+### `meta` 与 `.jsonl` 镜像（2026-10 新增）
+
+每次落盘**同时**产出两份，**主 `.json` 的契约不变**：
+
+| 文件 | 角色 | 说明 |
+|---|---|---|
+| `<脚本名>-<时间戳>.json` | **权威契约** | 字段布局与从前**完全一致**，只在末尾**追加** `meta` |
+| `<脚本名>-<时间戳>.jsonl` | **等价镜像** | 首行 `{"__meta__":…,"__count__":…}`，之后**一行一条记录** |
+
+`meta` 形如：
+
+```json
+{"skill": "wanfang-research", "script": "wanfang_search",
+ "time": "2026-10-07T10:50:58+08:00", "argv": ["--q", "关键词", "--rows", "5"]}
+```
+
+**为什么要 `.jsonl`**：不是为防"文件被截断"（文件是脚本自己完整写出的，**不会**截断），
+而是因为**一行一条记录**——agent 可以**直接按行**检索、分页、`head`/`tail`，
+**不必每次写解析器**：
+
+```powershell
+Get-Content .\logs\wanfang_search-*.jsonl -TotalCount 1                  # 首行 = meta
+Select-String -Path .\logs\wanfang_search-*.jsonl -Pattern '"id"' | Select-Object -First 5
+```
+
+**没有 `.tsv`**：一行一篇的表格是**派生视图**，列集合会随记录字段漂移（检索日志与详情日志的列完全不同），
+应由**下游分析层**生成，不属于日志本身。
+
 ## 配置（环境变量，前缀 `WF_`）
 
 `scripts/config.py` 集中配置，`WF_*` 覆盖（键名 = `WF_` + 点号转下划线大写，如 `timeout.page_load` → `WF_TIMEOUT_PAGE_LOAD`）。
@@ -228,7 +274,9 @@ python scripts\wf_search.py --q "机器学习" --rows 5
 | `citations` 显示 `"需要登录获取"` | 引用格式需机构登录 → `--start` 激活机构访问 |
 | 专利的 `patentType`/`claims` 为空 | 这些字段异步加载，脚本最多等 10s → 稍后重跑 |
 | `Chrome 未找到` | Chrome 没装或装在别处 → 安装 Chrome，或在 `scripts/cdp_base.py` 的 `CHROME_PATHS` 里加路径 |
-| `Chrome 30 秒内未就绪` | 启动超时 → 检查 Chrome 弹窗/杀软拦截，重试 |
+| `Chrome 30 秒内未就绪` | 启动超时 → 先看 `logs/chrome-launch.log`（Chrome 自己的 stderr 就在里面）；有 Chrome 弹窗/杀软拦截就重试，或调高 `WF_TIMEOUT_CHROME_START` |
+| `Chrome 启动即退出`，日志里有 `crashpad` / `OpenProcess` / `platform_channel` 加 `拒绝访问` | **受限沙箱拒绝了 Chrome 的进程与命名管道权限**（不是 skill 的问题）→ 在放行沙箱或 DSH 之外先 `python scripts/chrome_session.py --start`，再回沙箱内跑抓取脚本；详见「运行环境」 |
+| 报「日志目录不可写，未能落盘」 | Chrome 日志无处可写 → 用 `WF_LOGS_DIR` 指到工作区内的目录 |
 | `9222-9299 端口全部被占` | 端口耗尽 → 关掉多余的调试用 Chrome |
 | 下载后浏览器多了几个万方页面 | 站点自己 `window.open` 的打包/下载页 → 脚本**已自动清理**（限本次新出现 + 同注册域）；异常残留手动关即可 |
 | 结果被截断（stdout 只看到一部分） | 宿主对 stdout 有大小上限 → 读 `logPath` 指向的文件 |

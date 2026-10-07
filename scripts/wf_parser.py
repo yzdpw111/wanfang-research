@@ -124,6 +124,29 @@ def extract_refs(body):
     return [r for r in refs if not any(n in r for n in REF_NOISE)]
 
 
+#: `DOI：10.x` / `DOI:10.x`
+DOI_RE = re.compile(r"DOI\s*[：:]\s*(10\.\S+?)(?:\s|$)", re.I)
+
+
+def doi_before_references(body):
+    """只在「参考文献」标题**之前**的文本里找 DOI；找不到标题则返回 `''`。
+
+    ★ 修复实测 bug（2026-10）：万方「参考文献」列表里**每一条都带 `DOI:10.x`**，
+      旧实现从**整页**正则抓第一个 → **必然抓成参考文献里某篇的 DOI**。
+      实测证据：一篇中国学位论文（`thesis/D03561632`）被挂上
+      `10.1016/j.measurement.2021.109273`（Elsevier），而该页「参考文献」之前的
+      题录区**一个 DOI 都没有**（实测 headDois=[]，tailDoiCount=6）。
+
+    **找不到「参考文献」标题时返回 `''`** —— 宁可缺，不许错：
+    错误归属比缺字段更坏，读者会永远找不到那篇文献。
+    """
+    idx = (body or "").find(REF_HEAD)
+    if idx < 0:
+        return ""
+    m = DOI_RE.search(body[:idx])
+    return m.group(1).rstrip(".") if m else ""
+
+
 def split_claims(body):
     m = CLAIMS_RE.search(body or "")
     text = m.group(1).strip() if m else ""

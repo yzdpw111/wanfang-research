@@ -13,7 +13,8 @@ import time
 
 from cdp_base import close_page, create_page, ensure_cdp, setup_stdout, write_log
 from config import get
-from wf_parser import (REF_HEAD, REF_LINE_RE, detect_type, extract_refs,
+from wf_parser import (REF_HEAD, REF_LINE_RE, detect_type, doi_before_references,
+                       extract_refs,
                        parse_citations, split_claims)
 
 MAX_DETAIL = 8
@@ -112,9 +113,27 @@ INST_JS = """() => {
   return el ? (el.textContent || '').trim() : '';
 }"""
 DOI_JS = """() => {
-  const d = document.querySelector('.doiStyle');
-  return d ? (d.textContent || '').trim() : '';
+  // ★ 修复（实测根因）：万方改版后 `document.querySelector('.doiStyle')` 返回 null
+  //   （实测该页 .doiStyle 元素数 = 0），于是旧的 fallback 接手并在**整页**里抓第一个 DOI。
+  //   这里改为尝试一组候选选择器，且只接受像 DOI 的文本。
+  const sels = ['.doiStyle', '.detailIntro .doi', '.detail-intro .doi',
+                '[class*="doiStyle"]', '[class*="doi"]'];
+  for (const s of sels) {
+    for (const el of document.querySelectorAll(s)) {
+      const t = (el.textContent || '').trim();
+      if (/10\\.\\d{4,}/.test(t)) return t;
+    }
+  }
+  return '';
 }"""
+
+
+def _doi_before_references(text: str) -> str:
+    """委托给 `wf_parser.doi_before_references`（纯函数层，可离线单测）。
+
+    保留这个薄封装只是为了不动调用点；实现与测试都在 `wf_parser.py`。
+    """
+    return doi_before_references(text)
 KEYWORDS_JS = """() => Array.from(document.querySelectorAll('.itemKeyword a span'))
   .map(e => (e.textContent || '').trim()).filter(Boolean)"""
 PATENT_META_JS = """() => {
@@ -242,12 +261,14 @@ def scrape_meta(client, url, dtype):
     authors = client.evaluate(f"({AUTHORS_JS})()") or []
     institution = client.evaluate(f"({INST_JS})()") or ""
 
-    # DOI：.doiStyle 去前缀，fallback 正文
+    # DOI
+    # ★ 修复（实测根因）：旧 fallback 从**整页**抓第一个 `DOI：10.x`，
+    #   而万方「参考文献」列表里每一条都带 DOI → **必然抓成别人的**。
+    #   改为只在「参考文献」标题之前查找（见 `_doi_before_references`）。
     doi = re.sub(r"^DOI\s*[：:]\s*", "", client.evaluate(f"({DOI_JS})()") or "", flags=re.I).strip()
     text = _body_text(client)
     if not doi:
-        m = re.search(r"DOI[：:]\s*(10\.\S+)", text)
-        doi = m.group(1) if m else ""
+        doi = _doi_before_references(text)
 
     # 摘要（截 2000，空白折叠对齐 Node 版）
     abstract = ""
@@ -323,6 +344,17 @@ def scrape_meta(client, url, dtype):
 
     # 条件字段：空值删除，有内容才加
     result = {"url": url, "type": type_label, "hasInstitutionalAccess": has_access, **meta}
+    # ★ 2026-10 增强（**纯增量**）：另给一个统一为 `int` 的 `year`。
+    #   实测踩过：`pubDate` / `degreeYear` / `conferenceDate` 都是**字符串**
+    #   （个别还带"年.卷页"），下游按年份比较或排序时容易出错（曾把年份当字符串输出）。
+    #   **原字段保留不动**，只增这一个——下游若要整数年份，用 `year`。
+    _ym = re.search(
+        r"(?:19|20)\d{2}",
+        str(meta.get("pubDate") or meta.get("degreeYear")
+            or meta.get("conferenceDate") or ""),
+    )
+    if _ym:
+        result["year"] = int(_ym.group(0))
     if not result.get("doi"):
         result.pop("doi", None)
     if not result.get("keywords"):
